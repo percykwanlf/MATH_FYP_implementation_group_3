@@ -10,9 +10,7 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings("ignore")
 
-# -------------------------------
-# 1. OUR OWN EMD (No External Library!)
-# -------------------------------
+#Define EMD
 def simple_emd(x, max_imfs=4):
     """Simple Empirical Mode Decomposition (EMD) from scratch."""
     imfs = []
@@ -210,5 +208,6 @@ results.to_csv("momentum_strategy_returns.csv")
 stats_df = pd.DataFrame([orig_stats, emd_stats], index=['Original', 'EMD'])
 stats_df['Bootstrap p-value'] = [orig_p, emd_p]
 stats_df.to_csv("momentum_strategy_stats.csv")
+
 
 print("\nResults saved: momentum_strategy_returns.csv, momentum_strategy_stats.csv")
