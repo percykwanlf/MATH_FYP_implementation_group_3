@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import warnings
 warnings.filterwarnings("ignore")
 
-#Define EMD
+# Define EMD
 def simple_emd(x, max_imfs=4):
     """Simple Empirical Mode Decomposition (EMD) from scratch."""
     imfs = []
@@ -48,9 +48,9 @@ def simple_emd(x, max_imfs=4):
     return np.array(imfs)
 
 # -------------------------------
-# 2. Load All 100 S&P100 CSV Files
+# Load All 100 S&P100 CSV Files
 # -------------------------------
-DATA_DIR = r"C:\Users\KwanPY\Desktop\Stockinf"
+DATA_DIR = "." # your directory after downloading (...Stockinf)
 MAX_TICKERS = None         # limit universe for speed (set None to use all)
 MAX_DATA_POINTS = 1500     # last N rows per ticker (set None to keep full history)
 
@@ -92,7 +92,7 @@ log_panel = np.log(panel)
 monthly_log_panel = log_panel.resample('M').last().dropna(how='all')
 
 # -------------------------------
-# 3. EMD Smoothing (Using Our Own EMD)
+# EMD Smoothing (Using Our Own EMD)
 # -------------------------------
 def emd_denoise(log_prices, remove_first_n=2):
     IMFs = simple_emd(log_prices.values)
@@ -112,7 +112,7 @@ for ticker in monthly_log_panel.columns:
 smoothed_panel = pd.DataFrame(smoothed_panel).reindex(monthly_log_panel.index)
 
 # -------------------------------
-# 4. Momentum Strategy Backtest
+# Momentum Strategy Backtest
 # -------------------------------
 def momentum_backtest(returns_panel, formation_months=6, holding_months=6, top_pct=0.1):
     monthly_dates = returns_panel.resample('M').last().index
@@ -143,7 +143,7 @@ orig_ret = momentum_backtest(monthly_panel, 6, 6)
 emd_ret = momentum_backtest(smoothed_prices, 6, 6)
 
 # -------------------------------
-# 5. Performance Metrics
+# Performance Metrics
 # -------------------------------
 def performance_stats(rets):
     mean = rets.mean()
@@ -156,7 +156,7 @@ orig_stats = performance_stats(orig_ret)
 emd_stats = performance_stats(emd_ret)
 
 # -------------------------------
-# 6. Bootstrap Test
+# Bootstrap Test
 # -------------------------------
 def bootstrap_test(rets, n_boot=1000):
     boot_means = [np.random.choice(rets, size=len(rets), replace=True).mean() for _ in range(n_boot)]
@@ -166,7 +166,7 @@ orig_p = bootstrap_test(orig_ret.values)
 emd_p = bootstrap_test(emd_ret.values)
 
 # -------------------------------
-# 7. Final Report
+# Final Report
 # -------------------------------
 print("\n" + "="*60)
 print("         MOMENTUM STRATEGY COMPARISON REPORT")
@@ -185,7 +185,7 @@ print("            and stronger statistical significance.")
 print("="*60)
 
 # -------------------------------
-# 8. Plot
+# Plot
 # -------------------------------
 plt.figure(figsize=(12, 6))
 plt.plot(np.cumprod(1 + orig_ret), label='Original Momentum', alpha=0.8)
@@ -201,7 +201,7 @@ plt.close()
 print("Plot saved to momentum_strategy_cumulative_returns.png")
 
 # -------------------------------
-# 9. Save
+# Save
 # -------------------------------
 results = pd.DataFrame({'Original': orig_ret, 'EMD': emd_ret})
 results.to_csv("momentum_strategy_returns.csv")
@@ -211,3 +211,4 @@ stats_df.to_csv("momentum_strategy_stats.csv")
 
 
 print("\nResults saved: momentum_strategy_returns.csv, momentum_strategy_stats.csv")
+
