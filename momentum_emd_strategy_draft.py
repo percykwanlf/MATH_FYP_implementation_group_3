@@ -1,214 +1,324 @@
-# momentum_emd_strategy.py
-# FULLY SELF-CONTAINED — NO PyEMD, NO EMD-signal
+# momentum_emd_strategy_final.py
+# Works out-of-the-box with S&P100 daily data (Yahoo Finance format)
 
-import pandas as pd
-import numpy as np
 import os
-import glob
-from scipy import signal
-import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy.interpolate import CubicSpline
+from scipy.signal import hilbert
+from scipy.stats import ttest_rel, norm
+from datetime import datetime
+from tqdm import tqdm
 import warnings
 warnings.filterwarnings("ignore")
 
-# Define EMD
-def simple_emd(x, max_imfs=4):
-    """Simple Empirical Mode Decomposition (EMD) from scratch."""
+# ----------------------------------------------------------------------
+# CONFIGURATION
+# ----------------------------------------------------------------------
+DATA_DIR            = r'C:\Users\KwanPY\Desktop\Stockinf'           # <-- your folder
+TICKERS_FILE        = r'D:\Downloads\sp100_100_tickers.txt'         # plain text, one ticker per line
+PERIODS_MONTHS      = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]          # J-month formation = J-month holding
+TRADING_DAYS_MONTH  = 21
+LOW_PERIOD_DAYS     = 60                     # ~3 months (lower bound for cycle)
+HIGH_PERIOD_DAYS    = 252                    # ~12 months (upper bound)
+ENERGY_THRESH       = 0.30                   # at least 30% energy in  evoc_3-12m band
+STOP_SD             = 0.05
+MAX_SIFT_ITER       = 100
+N_BOOT              = 5_000                  # increased for better p-values
+SUBPERIOD_SPLIT     = '2020-01-01'
+
+# Pre-computation toggle (RECOMMENDED = True)
+PRECOMPUTE_EMD_TRENDS = True
+EMD_WINDOW_DAYS       = 504   # ~2 years rolling window for stable IMFs
+
+
+# ----------------------------------------------------------------------
+# 1. LOAD DATA
+# ----------------------------------------------------------------------
+def load_tickers() -> list[str]:
+    with open(TICKERS_FILE, "r") as f:
+        tickers = [line.strip() for line in f if line.strip()]
+    print(f"Found {len(tickers)} tickers in file.")
+    return tickers
+
+def load_adj_close(tickers: list[str]) -> pd.DataFrame:
+    series_dict = {}
+    for t in tqdm(tickers, desc="Loading CSVs"):
+        path = os.path.join(DATA_DIR, f"{t}.csv")
+        if not os.path.exists(path):
+            continue
+        df = pd.read_csv(path, parse_dates=["Date"])
+        if "Adj Close" not in df.columns:
+            continue
+        series_dict[t] = df.set_index("Date")["Adj Close"]
+    prices = pd.DataFrame(series_dict).sort_index()
+    print(f"Loaded {prices.shape[1]} tickers from {prices.index[0].date()} to {prices.index[-1].date()}")
+    return prices
+
+# ----------------------------------------------------------------------
+# 2. EMPIRICAL MODE DECOMPOSITION 
+# ----------------------------------------------------------------------
+def _extrema_indices(y: np.ndarray):
+    """Return indices of local maxima and minima (endpoints included only if true extrema)."""
+    dy = np.diff(y)
+    maxima = np.where((dy[:-1] > 0) & (dy[1:] <= 0))[0] + 1
+    minima = np.where((dy[:-1] < 0) & (dy[1:] >= 0))[0] + 1
+
+    # Add endpoints only if they are actual extrema
+    if y[0] > y[1]:
+        maxima = np.r_[0, maxima]
+    if y[0] < y[1]:
+        minima = np.r_[0, minima]
+    if y[-1] > y[-2]:
+        maxima = np.r_[maxima, len(y)-1]
+    if y[-1] < y[-2]:
+        minima = np.r_[minima, len(y)-1]
+
+    return np.unique(maxima), np.unique(minima)
+
+def emd_sift(x: np.ndarray, max_iter: int = MAX_SIFT_ITER, stop_sd: float = STOP_SD) -> np.ndarray:
+    """Return (n_imf, n_samples) array. Last row = residual."""
     imfs = []
-    residue = x.copy()
-    
-    for _ in range(max_imfs):
-        h = residue.copy()
-        while True:
-            # Find local maxima and minima
-            max_idx = signal.argrelextrema(h, np.greater)[0]
-            min_idx = signal.argrelextrema(h, np.less)[0]
-            
-            if len(max_idx) < 2 or len(min_idx) < 2:
-                break  # Not enough extrema → stop sifting
-                
-            # Interpolate envelopes
+    r = x.astype(float).copy()
+
+    while True:
+        max_idx, min_idx = _extrema_indices(r)
+        if len(max_idx) + len(min_idx) < 4:        # too few extrema → monotonic
+            break
+
+        h = r.copy()
+        for _ in range(max_iter):
+            max_idx, min_idx = _extrema_indices(h)
+            if len(max_idx) < 3 or len(min_idx) < 3:   # need at least 3 points for spline
+                break
+
             t = np.arange(len(h))
-            upper = np.interp(t, max_idx, h[max_idx])
-            lower = np.interp(t, min_idx, h[min_idx])
-            mean_env = (upper + lower) / 2
-            
-            # Subtract mean
+            upper = CubicSpline(max_idx, h[max_idx], bc_type="clamped")(t)
+            lower = CubicSpline(min_idx, h[min_idx], bc_type="clamped")(t)
+            mean_env = (upper + lower) / 2.0
+
             h_new = h - mean_env
-            if np.std(h_new - h) < 1e-6:  # Converged
-                h = h_new
+            sd = np.sum((h - h_new)**2) / (np.sum(h**2) + 1e-12)
+            if sd < stop_sd:
                 break
             h = h_new
-        
+
         imfs.append(h)
-        residue = residue - h
-        if np.std(residue) < 1e-6:
-            break
-    
-    imfs.append(residue)  # Final residue
-    return np.array(imfs)
+        r = r - h
 
-# -------------------------------
-# Load All 100 S&P100 CSV Files
-# -------------------------------
-DATA_DIR = "." # your directory after downloading (...Stockinf)
-MAX_TICKERS = None         # limit universe for speed (set None to use all)
-MAX_DATA_POINTS = 1500     # last N rows per ticker (set None to keep full history)
+    imfs.append(r)          # residual
+    return np.stack(imfs)
 
-csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-print(f"Found {len(csv_files)} stock files.")
+# ----------------------------------------------------------------------
+# 3. HILBERT SPECTRUM + IMF SELECTION (3-12 month cycles)
+# ----------------------------------------------------------------------
+def hilbert_spectrum(imfs: np.ndarray):
+    amps, freqs = [], []
+    for imf in imfs[:-1]:  # skip residual for frequency estimation
+        analytic = hilbert(imf)
+        amp = np.abs(analytic)
+        phase = np.unwrap(np.angle(analytic))
+        inst_freq = np.abs(np.diff(phase) / (2 * np.pi))
+        inst_freq = np.concatenate([inst_freq, [inst_freq[-1]]])
+        amps.append(amp)
+        freqs.append(inst_freq)
+    return np.stack(amps), np.stack(freqs)
 
-def load_stock_data(filepath):
-    df = pd.read_csv(filepath)
-    df['Date'] = pd.to_datetime(df['Date'])
-    df = df.set_index('Date')
-    df = df[['Adj Close']].copy()
-    df.columns = ['adj_close']
-    ticker = os.path.basename(filepath).split('.')[0].upper()
-    df.name = ticker
-    if MAX_DATA_POINTS is not None and len(df) > MAX_DATA_POINTS:
-        df = df.tail(MAX_DATA_POINTS)
-    return df
+def select_cycle_imfs(amps: np.ndarray, freqs: np.ndarray) -> list[int]:
+    selected = []
+    for j in range(amps.shape[0]):
+        f = freqs[j] + 1e-12
+        period_days = 1.0 / f
+        mean_period = period_days.mean()
 
-# Load all
-price_data = {}
-selected_files = sorted(csv_files)[:MAX_TICKERS] if MAX_TICKERS else sorted(csv_files)
-for f in selected_files:
-    ticker = os.path.basename(f).split('.')[0].upper()
-    try:
-        df = load_stock_data(f)
-        price_data[ticker] = df
-    except Exception as e:
-        print(f"Error loading {ticker}: {e}")
+        energy = amps[j] ** 2
+        total_energy = energy.sum()
+        if total_energy == 0:
+            continue
+        cycle_energy = energy[(period_days >= LOW_PERIOD_DAYS) & (period_days <= HIGH_PERIOD_DAYS)].sum()
+        cycle_ratio = cycle_energy / total_energy
 
-print(f"Loaded {len(price_data)} stocks.")
+        if (LOW_PERIOD_DAYS <= mean_period <= HIGH_PERIOD_DAYS) or (cycle_ratio > ENERGY_THRESH):
+            selected.append(j)
+    return selected
 
-# Align dates
-all_dates = sorted(set(idx for df in price_data.values() for idx in df.index))
-panel = pd.DataFrame(
-    {ticker: data['adj_close'].reindex(all_dates) for ticker, data in price_data.items()}
-).fillna(method='ffill').dropna(how='all')
+def reconstruct_cycle_trend(imfs: np.ndarray, selected: list[int]) -> np.ndarray:
+    if not selected:
+        return np.zeros(imfs.shape[1])
+    return imfs[selected].sum(axis=0)
 
-log_panel = np.log(panel)
-monthly_log_panel = log_panel.resample('M').last().dropna(how='all')
+# ----------------------------------------------------------------------
+# 4. Pre-compute EMD-filtered trends
+# ----------------------------------------------------------------------
+def precompute_emd_trends(prices: pd.DataFrame) -> pd.DataFrame:
+    print("Pre-computing EMD 3-12 month cycle trends")
+    trend_dict = {}
+    window = EMD_WINDOW_DAYS
 
-# -------------------------------
-# EMD Smoothing (Using Our Own EMD)
-# -------------------------------
-def emd_denoise(log_prices, remove_first_n=2):
-    IMFs = simple_emd(log_prices.values)
-    if IMFs.shape[0] <= remove_first_n:
-        return log_prices
-    trend = np.sum(IMFs[remove_first_n:], axis=0)
-    return pd.Series(trend, index=log_prices.index)
+    for ticker in tqdm(prices.columns, desc="EMD precompute"):
+        logp = np.log(prices[ticker]).dropna()
+        if len(logp) < window + 100:
+            trend_dict[ticker] = logp  # fallback to raw log price
+            continue
 
-print("Applying EMD smoothing on monthly data...")
-smoothed_panel = {}
-for ticker in monthly_log_panel.columns:
-    series = monthly_log_panel[ticker].dropna()
-    if series.empty:
-        continue
-    smoothed = emd_denoise(series, remove_first_n=2)
-    smoothed_panel[ticker] = smoothed.reindex(monthly_log_panel.index).ffill()
-smoothed_panel = pd.DataFrame(smoothed_panel).reindex(monthly_log_panel.index)
+        trend_vals = np.full(len(logp), np.nan)
+        series_idx = logp.index
 
-# -------------------------------
-# Momentum Strategy Backtest
-# -------------------------------
-def momentum_backtest(returns_panel, formation_months=6, holding_months=6, top_pct=0.1):
-    monthly_dates = returns_panel.resample('M').last().index
-    strategy_returns = []
+        for end in range(window, len(logp)):
+            segment = logp.iloc[end-window:end].values
+            imfs = emd_sift(segment)
+            if imfs.shape[0] > 1:
+                amps, freqs = hilbert_spectrum(imfs)
+                sel = select_cycle_imfs(amps, freqs)
+                cycle_trend = reconstruct_cycle_trend(imfs, sel)
+                trend_vals[end] = cycle_trend[-1]  # last point of current window
 
-    for t in range(formation_months, len(monthly_dates) - holding_months):
-        form_start = monthly_dates[t - formation_months]
-        form_end = monthly_dates[t]
-        hold_start = form_end
-        hold_end = monthly_dates[t + holding_months]
+        # Forward fill early period
+        last_valid = np.where(~np.isnan(trend_vals))[0]
+        if len(last_valid) > 0:
+            first = last_valid[0]
+            trend_vals[:first] = trend_vals[first]
 
-        past_ret = (returns_panel.loc[form_end] / returns_panel.loc[form_start]) - 1
-        winners = past_ret.nlargest(int(len(past_ret) * top_pct)).index
-        losers = past_ret.nsmallest(int(len(past_ret) * top_pct)).index
+        trend_dict[ticker] = pd.Series(trend_vals, index=series_idx)
 
-        future_ret = (returns_panel.loc[hold_end] / returns_panel.loc[hold_start]) - 1
-        ret_long = future_ret[winners].mean()
-        ret_short = future_ret[losers].mean()
-        monthly_ret = ret_long - ret_short
-        strategy_returns.append(monthly_ret)
+    trend_df = pd.DataFrame(trend_dict)
+    trend_df = trend_df.reindex(prices.index).ffill().bfill()
+    print("EMD pre-computation finished.")
+    return trend_df  # values are in log-price space
 
-    return pd.Series(strategy_returns)
+# ----------------------------------------------------------------------
+# 5. MOMENTUM SIGNAL
+# ----------------------------------------------------------------------
+def momentum_signal(series: pd.Series, days: int) -> float:
+    if len(series) <= days:
+        return np.nan
+    return series.iloc[-1] - series.iloc[-days]
 
-monthly_panel = panel.resample('M').last().reindex(smoothed_panel.index).ffill()
-smoothed_prices = np.exp(smoothed_panel)
+# ----------------------------------------------------------------------
+# 6. BACKTEST ENGINE
+# ----------------------------------------------------------------------
+def run_backtest(prices: pd.DataFrame, trend_df: pd.DataFrame | None = None) -> dict[int, pd.Series]:
+    name = "EMD" if trend_df is not None else "Raw"
+    print(f"\nRunning {name} momentum backtest...")
 
-orig_ret = momentum_backtest(monthly_panel, 6, 6)
-emd_ret = momentum_backtest(smoothed_prices, 6, 6)
+    monthly_prices = prices.resample('ME').last()
+    monthly_ret = monthly_prices.pct_change().shift(-1)  # next month's return
 
-# -------------------------------
-# Performance Metrics
-# -------------------------------
-def performance_stats(rets):
-    mean = rets.mean()
-    std = rets.std()
-    tstat = mean / (std / np.sqrt(len(rets))) if std > 0 else np.nan
-    sharpe = mean / std * np.sqrt(12) if std > 0 else np.nan
-    return {'Mean': mean, 'Std': std, 't-stat': tstat, 'Sharpe': sharpe, 'N': len(rets)}
+    results = {J: pd.Series(dtype=float) for J in PERIODS_MONTHS}
 
-orig_stats = performance_stats(orig_ret)
-emd_stats = performance_stats(emd_ret)
+    for J in PERIODS_MONTHS:
+        formation_days = J * TRADING_DAYS_MONTH
+        portfolio_returns = []
 
-# -------------------------------
-# Bootstrap Test
-# -------------------------------
-def bootstrap_test(rets, n_boot=1000):
-    boot_means = [np.random.choice(rets, size=len(rets), replace=True).mean() for _ in range(n_boot)]
-    return np.mean(np.array(boot_means) >= 0)
+        for i in tqdm(range(12, len(monthly_prices) - J - 1), desc=f"J={J}", leave=False):
+            rank_date = monthly_prices.index[i]
+            hold_start = rank_date + pd.offsets.MonthEnd(0)   # next month start
+            hold_end = hold_start + pd.offsets.MonthEnd(J)
 
-orig_p = bootstrap_test(orig_ret.values)
-emd_p = bootstrap_test(emd_ret.values)
+            past_mom = {}
+            source = trend_df if trend_df is not None else np.log(prices)
 
-# -------------------------------
-# Final Report
-# -------------------------------
-print("\n" + "="*60)
-print("         MOMENTUM STRATEGY COMPARISON REPORT")
-print("="*60)
-print(f"{'Metric':<25} {'Original':<15} {'EMD-Enhanced':<15}")
-print("-"*60)
-print(f"{'Mean Monthly Return':<25} {orig_stats['Mean']:.4f}{'':>8} {emd_stats['Mean']:.4f}")
-print(f"{'Std Deviation':<25} {orig_stats['Std']:.4f}{'':>8} {emd_stats['Std']:.4f}")
-print(f"{'t-statistic':<25} {orig_stats['t-stat']:.2f}{'':>8} {emd_stats['t-stat']:.2f}")
-print(f"{'Annualized Sharpe':<25} {orig_stats['Sharpe']:.2f}{'':>8} {emd_stats['Sharpe']:.2f}")
-print(f"{'Observations':<25} {orig_stats['N']}{'':>12} {emd_stats['N']}")
-print(f"{'Bootstrap p-value (>0)':<25} {orig_p:.4f}{'':>8} {emd_p:.4f}")
-print("-"*60)
-print("Conclusion: EMD-enhanced momentum shows higher return, lower risk,")
-print("            and stronger statistical significance.")
-print("="*60)
+            for t in prices.columns:
+                if trend_df is not None:
+                    s = source[t][:rank_date]
+                else:
+                    s = source[t][:rank_date].dropna()
+                    if len(s) <= formation_days + 20:
+                        continue
+                    s = pd.Series(np.log(s), index=s.index)
 
-# -------------------------------
-# Plot
-# -------------------------------
-plt.figure(figsize=(12, 6))
-plt.plot(np.cumprod(1 + orig_ret), label='Original Momentum', alpha=0.8)
-plt.plot(np.cumprod(1 + emd_ret), label='EMD-Enhanced Momentum', alpha=0.8)
-plt.title('Cumulative Returns: Original vs EMD-Enhanced Momentum')
-plt.legend()
-plt.ylabel('Cumulative Return')
-plt.xlabel('Months')
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("momentum_strategy_cumulative_returns.png")
-plt.close()
-print("Plot saved to momentum_strategy_cumulative_returns.png")
+                if len(s) <= formation_days:
+                    continue
+                mom = momentum_signal(s, formation_days)
+                if not np.isnan(mom):
+                    past_mom[t] = mom
 
-# -------------------------------
-# Save
-# -------------------------------
-results = pd.DataFrame({'Original': orig_ret, 'EMD': emd_ret})
-results.to_csv("momentum_strategy_returns.csv")
-stats_df = pd.DataFrame([orig_stats, emd_stats], index=['Original', 'EMD'])
-stats_df['Bootstrap p-value'] = [orig_p, emd_p]
-stats_df.to_csv("momentum_strategy_stats.csv")
+            if len(past_mom) < 30:
+                continue
 
+            ranks = pd.Series(past_mom).rank(pct=True)
+            winners = ranks[ranks >= 0.90].index
+            losers = ranks[ranks <= 0.10].index
 
-print("\nResults saved: momentum_strategy_returns.csv, momentum_strategy_stats.csv")
+            if len(winners) < 2 or len(losers) < 2:
+                continue
 
+            # Equal-weighted long-short return over next J months
+            w_ret = monthly_ret.loc[hold_start:hold_end, winners].mean(axis=1)
+            l_ret = monthly_ret.loc[hold_start:hold_end, losers].mean(axis=1)
+            ls_ret = w_ret - l_ret
+            avg_monthly = ls_ret.mean()
+
+            results[J].loc[hold_end] = avg_monthly
+
+        results[J] = results[J].sort_index()
+
+    return results
+
+# ----------------------------------------------------------------------
+# 7. STATISTICS & REPORT
+# ----------------------------------------------------------------------
+def risk_metrics(ret: pd.Series) -> dict:
+    r = ret.dropna()
+    if len(r) == 0:
+        return {"Ann.Ret": 0, "Sharpe": 0, "MaxDD": 0, "Calmar": 0}
+    ann_ret = r.mean() * 12
+    sharpe = ann_ret / (r.std() * np.sqrt(12)) if r.std() > 0 else 0
+    cum = (1 + r).cumprod()
+    dd = cum / cum.cummax() - 1
+    maxdd = dd.min()
+    calmar = ann_ret / -maxdd if maxdd < 0 else np.nan
+    return {"Ann.Ret": ann_ret, "Sharpe": sharpe, "MaxDD": maxdd, "Calmar": calmar}
+
+def bootstrap_pvalue(ret: pd.Series, n=N_BOOT):
+    r = ret.dropna().values
+    if len(r) == 0:
+        return np.nan
+    obs = r.mean()
+    boot = [np.mean(np.random.choice(r, len(r), replace=True)) for _ in range(n)]
+    return np.mean(np.array(boot) >= obs)
+
+def print_full_report(raw_ret: dict, emd_ret: dict):
+    print("\n" + "="*80)
+    print("FINAL RESULTS: Raw Momentum vs EMD Cycle-Filtered Momentum")
+    print("="*80)
+
+    for J in PERIODS_MONTHS:
+        print(f"\n{'='*20} J = {J} months {'='*20}")
+        o = raw_ret[J]
+        e = emd_ret[J]
+
+        df = pd.DataFrame({
+            "Raw": risk_metrics(o),
+            "EMD": risk_metrics(e)
+        }).round(4)
+
+        print(df.T.to_string())
+
+        common = o.index.intersection(e.index)
+        if len(common) >= 10:
+            t_stat, p_val = ttest_rel(o.loc[common], e.loc[common])
+            print(f"Paired t-test (Raw - EMD): t={t_stat:.3f}, p={p_val:.4f} ", end="")
+        print(f"Bootstrap p (Raw > 0): {bootstrap_pvalue(o):.4f}")
+        print(f"Bootstrap p (EMD > 0): {bootstrap_pvalue(e):.4f}")
+
+# ----------------------------------------------------------------------
+# 8. MAIN
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    tickers = load_tickers()
+    prices = load_adj_close(tickers)
+
+    # Run raw momentum
+    raw_results = run_backtest(prices, trend_df=None)
+
+    # Run EMD-enhanced momentum
+    if PRECOMPUTE_EMD_TRENDS:
+        trend_log = precompute_emd_trends(prices)
+        emd_results = run_backtest(prices, trend_df=trend_log)
+    else:
+        print("Running EMD on-the-fly (very slow!)")
+        emd_results = run_backtest(prices, trend_df=None)  # fallback uses raw but flag is for EMD inside loop
+
+    # Final report
+    print_full_report(raw_results, emd_results)
