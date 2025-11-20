@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore")
 # ----------------------------------------------------------------------
 # CONFIGURATION
 # ----------------------------------------------------------------------
-DATA_DIR            = r'...'           # <-- your folder
+DATA_DIR            = r'...\Stockinf'           # <-- your folder
 TICKERS_FILE        = r'D:\Downloads\sp100_100_tickers.txt'         # plain text, one ticker per line
 PERIODS_MONTHS      = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]          # J-month formation = J-month holding
 TRADING_DAYS_MONTH  = 21
@@ -322,4 +322,5 @@ if __name__ == "__main__":
 
     # Final report
     print_full_report(raw_results, emd_results)
+
 
