@@ -1,4 +1,3 @@
-# momentum_emd_strategy_final.py
 # Works out-of-the-box with S&P100 daily data (Yahoo Finance format)
 
 import os
@@ -15,22 +14,21 @@ warnings.filterwarnings("ignore")
 # ----------------------------------------------------------------------
 # CONFIGURATION
 # ----------------------------------------------------------------------
-DATA_DIR            = r'...\Stockinf'           # <-- your folder
-TICKERS_FILE        = r'D:\Downloads\sp100_100_tickers.txt'         # plain text, one ticker per line
-PERIODS_MONTHS      = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]          # J-month formation = J-month holding
+DATA_DIR            = r'...'           # <-- your folder of stocks' excel files
+TICKERS_FILE        = r'...'         # stocks names, one ticker per line
+PERIODS_MONTHS      = [6]          # J-month formation = J-month holding
 TRADING_DAYS_MONTH  = 21
 LOW_PERIOD_DAYS     = 60                     # ~3 months (lower bound for cycle)
 HIGH_PERIOD_DAYS    = 252                    # ~12 months (upper bound)
 ENERGY_THRESH       = 0.30                   # at least 30% energy in  evoc_3-12m band
 STOP_SD             = 0.05
 MAX_SIFT_ITER       = 100
-N_BOOT              = 5_000                  # increased for better p-values
+N_BOOT              = 10_000                 # increased for better p-values
 SUBPERIOD_SPLIT     = '2020-01-01'
 
 # Pre-computation toggle (RECOMMENDED = True)
 PRECOMPUTE_EMD_TRENDS = True
 EMD_WINDOW_DAYS       = 504   # ~2 years rolling window for stable IMFs
-
 
 # ----------------------------------------------------------------------
 # 1. LOAD DATA
@@ -113,8 +111,10 @@ def emd_sift(x: np.ndarray, max_iter: int = MAX_SIFT_ITER, stop_sd: float = STOP
 # 3. HILBERT SPECTRUM + IMF SELECTION (3-12 month cycles)
 # ----------------------------------------------------------------------
 def hilbert_spectrum(imfs: np.ndarray):
+    """Return amps and freqs only for proper IMFs (exclude residual)"""
     amps, freqs = [], []
-    for imf in imfs[:-1]:  # skip residual for frequency estimation
+    # We analyse only the oscillatory IMFs, not the final residual
+    for imf in imfs[:-1]:
         analytic = hilbert(imf)
         amp = np.abs(analytic)
         phase = np.unwrap(np.angle(analytic))
@@ -124,28 +124,28 @@ def hilbert_spectrum(imfs: np.ndarray):
         freqs.append(inst_freq)
     return np.stack(amps), np.stack(freqs)
 
-def select_cycle_imfs(amps: np.ndarray, freqs: np.ndarray) -> list[int]:
-    selected = []
-    for j in range(amps.shape[0]):
+def select_cycle_imfs_to_remove(amps: np.ndarray, freqs: np.ndarray) -> list[int]:
+    """Return indices of IMFs that are in 3–12 month band → we will REMOVE them"""
+    remove = []
+    for j in range(amps.shape[0]):  # note: we skip the residual
         f = freqs[j] + 1e-12
         period_days = 1.0 / f
         mean_period = period_days.mean()
-
         energy = amps[j] ** 2
-        total_energy = energy.sum()
-        if total_energy == 0:
+        total_e = energy.sum()
+        if total_e == 0:
             continue
-        cycle_energy = energy[(period_days >= LOW_PERIOD_DAYS) & (period_days <= HIGH_PERIOD_DAYS)].sum()
-        cycle_ratio = cycle_energy / total_energy
+        target_e = energy[(period_days >= LOW_PERIOD_DAYS) & (period_days <= HIGH_PERIOD_DAYS)].sum()
+        if (LOW_PERIOD_DAYS <= mean_period <= HIGH_PERIOD_DAYS) or (target_e/total_e > ENERGY_THRESH):
+            remove.append(j)
+    return remove
 
-        if (LOW_PERIOD_DAYS <= mean_period <= HIGH_PERIOD_DAYS) or (cycle_ratio > ENERGY_THRESH):
-            selected.append(j)
-    return selected
-
-def reconstruct_cycle_trend(imfs: np.ndarray, selected: list[int]) -> np.ndarray:
-    if not selected:
-        return np.zeros(imfs.shape[1])
-    return imfs[selected].sum(axis=0)
+def reconstruct_smooth_trend(imfs: np.ndarray, remove_idx: list[int]) -> np.ndarray:
+    full = imfs.sum(axis=0)
+    if remove_idx:
+        cycles = imfs[remove_idx].sum(axis=0)
+        return full - cycles
+    return full
 
 # ----------------------------------------------------------------------
 # 4. Pre-compute EMD-filtered trends
@@ -169,9 +169,9 @@ def precompute_emd_trends(prices: pd.DataFrame) -> pd.DataFrame:
             imfs = emd_sift(segment)
             if imfs.shape[0] > 1:
                 amps, freqs = hilbert_spectrum(imfs)
-                sel = select_cycle_imfs(amps, freqs)
-                cycle_trend = reconstruct_cycle_trend(imfs, sel)
-                trend_vals[end] = cycle_trend[-1]  # last point of current window
+                sel_to_remove = select_cycle_imfs_to_remove(amps, freqs)
+                trend = reconstruct_smooth_trend(imfs, sel_to_remove)
+                trend_vals[end] = trend[-1]
 
         # Forward fill early period
         last_valid = np.where(~np.isnan(trend_vals))[0]
@@ -220,12 +220,12 @@ def run_backtest(prices: pd.DataFrame, trend_df: pd.DataFrame | None = None) -> 
 
             for t in prices.columns:
                 if trend_df is not None:
-                    s = source[t][:rank_date]
+                    s = source[t][:rank_date].dropna()           # EMD: already log-trend
                 else:
-                    s = source[t][:rank_date].dropna()
-                    if len(s) <= formation_days + 20:
+                    raw_series = prices[t][:rank_date].dropna()   # use original prices
+                    if len(raw_series) <= formation_days + 20:
                         continue
-                    s = pd.Series(np.log(s), index=s.index)
+                    s = np.log(raw_series)
 
                 if len(s) <= formation_days:
                     continue
@@ -274,9 +274,10 @@ def bootstrap_pvalue(ret: pd.Series, n=N_BOOT):
     r = ret.dropna().values
     if len(r) == 0:
         return np.nan
-    obs = r.mean()
-    boot = [np.mean(np.random.choice(r, len(r), replace=True)) for _ in range(n)]
-    return np.mean(np.array(boot) >= obs)
+    obs = np.mean(r)
+    centered = r - obs  # Center to impose H0: mean=0
+    boot = [np.mean(np.random.choice(centered, len(centered), replace=True)) for _ in range(n)]
+    return np.mean(np.array(boot) >= obs)  # One-sided p-value for mean > 0
 
 def print_full_report(raw_ret: dict, emd_ret: dict):
     print("\n" + "="*80)
@@ -322,5 +323,4 @@ if __name__ == "__main__":
 
     # Final report
     print_full_report(raw_results, emd_results)
-
 
