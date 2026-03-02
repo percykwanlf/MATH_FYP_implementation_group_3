@@ -13,12 +13,10 @@ The project evaluates the **Jegadeesh & Titman (1993)** Momentum Strategy and th
 * **EMD Filtering**: Daily log prices are decomposed into Intrinsic Mode Functions (IMFs). Short-term noise (IMF1 and IMF2) is removed to reconstruct a "cleaner" trend for signal generation.
 
 
-* 
-**Hilbert Spectrum**: Used to calculate instantaneous frequencies and identify cycles within the 3–12 month range.
+* **Hilbert Spectrum**: Used to calculate instantaneous frequencies and identify cycles within the 3–12 month range.
 
 
-* 
-**Zero-Cost Portfolios**: The strategy ranks stocks by past returns, buying the top 10% ("Winners") and selling the bottom 10% ("Losers").
+* **Zero-Cost Portfolios**: The strategy ranks stocks by past returns, buying the top 10% ("Winners") and selling the bottom 10% ("Losers").
 
 
 
@@ -43,16 +41,13 @@ The following data represents the performance of the zero-cost (long-short) mome
 
 ### Conclusions on Long-Short Approach
 
-* 
-**No Significant Superiority**: Paired t-tests showed no statistically meaningful difference between Raw and EMD-filtered long-short approaches.
+* **No Significant Superiority**: Paired t-tests showed no statistically meaningful difference between Raw and EMD-filtered long-short approaches.
 
 
-* 
-**High Risk Exposure**: Both long-short implementations experienced significant drawdowns (up to 43%) and poor risk-adjusted returns.
+* **High Risk Exposure**: Both long-short implementations experienced significant drawdowns (up to 43%) and poor risk-adjusted returns.
 
 
-* 
-**Market Context**: The strategy struggled because the S&P 100 constituents performed exceptionally well over the last 10 years, making shorting the "Loser" portfolio disadvantageous.
+* **Market Context**: The strategy struggled because the S&P 100 constituents performed exceptionally well over the last 10 years, making shorting the "Loser" portfolio disadvantageous.
 
 
 
@@ -60,16 +55,13 @@ The following data represents the performance of the zero-cost (long-short) mome
 
 ## 🛠 Features
 
-* 
-**Adaptive Decomposition**: Custom sifting process using cubic splines for envelope interpolation.
+* **Adaptive Decomposition**: Custom sifting process using cubic splines for envelope interpolation.
 
 
-* 
-**Rolling Window Analysis**: EMD trends are precomputed using a 504-day (~2 year) rolling window to ensure stability.
+* **Rolling Window Analysis**: EMD trends are precomputed using a 504-day (~2 year) rolling window to ensure stability.
 
 
-* 
-**Statistical Validation**: Includes automated paired t-tests and bootstrap p-value calculations to determine significance.
+* **Statistical Validation**: Includes automated paired t-tests and bootstrap p-value calculations to determine significance.
 
 
 
@@ -77,16 +69,13 @@ The following data represents the performance of the zero-cost (long-short) mome
 
 ## 📂 Repository Structure
 
-* 
-`main.py`: The core script for data loading, EMD decomposition, and backtesting.
+* `main.py`: The core script for data loading, EMD decomposition, and backtesting.
 
 
-* 
-`data/`: Directory for S&P 100 ticker CSV files (Yahoo Finance format).
+* `data/`: Directory for S&P 100 ticker CSV files (Yahoo Finance format).
 
 
-* 
-`final_report.pdf`: Detailed mathematical analysis and methodology.
+* `final_report.pdf`: Detailed mathematical analysis and methodology.
 
 
 
@@ -94,13 +83,12 @@ The following data represents the performance of the zero-cost (long-short) mome
 
 ## 📝 References
 
+1. **Huang, N. E., et al. (1998)**. "The empirical mode decomposition and the Hilbert spectrum...".
 
-1. Huang, N. E., Shen, Z., Long, S. R., Wu, M. C., Shih, H. H., Zheng, Q., ... & Liu, H. H. (1998). The empirical
-mode decomposition and the Hilbert spectrum for nonlinear and non-stationary time series analysis. Proceedings
-of the Royal Society of London. Series A: Mathematical, Physical and Engineering Sciences, 454(1971), 903-995.
 
-2. Jegadeesh, N., & Titman, S. (1993). Returns to buying winners and selling losers: Implications for stock market
-e”ciency. The Journal of Finance, 48(1), 65-91.
+2. **Jegadeesh, N., & Titman, S. (1993)**. "Returns to buying winners and selling losers...".
 
-4. George, T. J., & Hwang, C.-Y. (2004). The 52-week high and momentum investing. The Journal of Finance,
-59(5), 2145-2176. 
+
+3. **George, T. J., & Hwang, C.-Y. (2004)**. "The 52-week high and momentum investing".
+
+
