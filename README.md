@@ -10,8 +10,7 @@ The project evaluates the **Jegadeesh & Titman (1993)** Momentum Strategy and th
 
 ### Core Methodology
 
-* 
-**EMD Filtering**: Daily log prices are decomposed into Intrinsic Mode Functions (IMFs). Short-term noise (IMF1 and IMF2) is removed to reconstruct a "cleaner" trend for signal generation.
+* **EMD Filtering**: Daily log prices are decomposed into Intrinsic Mode Functions (IMFs). Short-term noise (IMF1 and IMF2) is removed to reconstruct a "cleaner" trend for signal generation.
 
 
 * 
